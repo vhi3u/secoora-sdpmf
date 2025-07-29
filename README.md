@@ -2,6 +2,7 @@
 SECOORA Slocum Data Processing and Management Framework
 
 Author: Victor Nguyen, UNC
+
 Collaborators: Harvey Seim, UNC, and Catherine Edwards, UGA
 
 This GitHub repository contains useful tools to support the [SECOORA Glider Observatory](https://secoora.org/data/secoora-glider-observatory/) in Slocum glider processing and management for consistent and reliable practice. 
