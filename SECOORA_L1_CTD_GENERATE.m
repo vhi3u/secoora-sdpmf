@@ -23,12 +23,12 @@ clc
 clear;
 
 % Add glider start and end date. refer to SECOORA sheet (Jennifer Dorton)
-strStartDate = '25-Sep-2021';
-strEndDate = '02-Nov-2021';
+strStartDate = '10-Nov-2021';
+strEndDate = '01-Dec-2021';
 
-gliderName = 'salacia';
-dateTag = '2021_09';
-dTag = 'September_21';
+gliderName = 'angus';
+dateTag = '2021_11';
+dTag = 'November_21';
 
 if ismember(gliderName, {'ramses', 'pelagia', 'salacia', 'bass', 'sam'})
     strGen = 'G1';
@@ -46,9 +46,11 @@ else
     isPumped = true;
 end
 
+% ADDED: stable flag for G1 logic everywhere below
+isG1 = strcmp(strGen, 'G1');
+
 fprintf('Starting L1 CTD processing... \nGlider name: %s \nGen: %s \nisPumped = %i\n', gliderName, strGen, isPumped);
 
-%%
 
 % load .ebdasc and .dbdasc files 
 
@@ -110,7 +112,7 @@ pres = sstruct.sci_water_pressure;
 ctd_time = sstruct.sci_ctd41cp_timestamp; % not sure if this is the right timestamp?
 ptime_ebd = sstruct.sci_m_present_time;
 
-%% L0 Quality Control
+% L0 Quality Control
 
 % monotonic time sort (flight files)
 
@@ -193,7 +195,7 @@ num_yos = floor(num_profiles);
 params=[]; fvals=[]; residuals=[]; profiles=[]; pidx=[];
 
 
-%% Science Corrections
+% Science Corrections
 
 % make copy of dbd time stamp vector for use in salinity/density correction...
 ptime1_dbd = ptime_dbd;
@@ -277,9 +279,9 @@ depth_dbd = depth;
 
 depth = sw_dpth(pres, gpsLat);
 
-%% Thermal Lag Parameters (only for G1)
+% Thermal Lag Parameters (only for G1)
 
-if ismember(strGen, 'G1')
+if isG1
 
     tic;
     np = 1; 
@@ -355,84 +357,92 @@ if ismember(strGen, 'G1')
     end % while
     close(f)
     toc;
+
+    % Store Parameters
+
+    % FIX INTO LOOP ABOVE 
+
+    % trim outliers
+    bounds = zeros(4,2);
+    for i = 1:4
+        bounds(i,1) = prctile(params(:,i), 1);
+        bounds(i,2) = prctile(params(:,i), 99);
+
+    end
+
+    valid_i = find(...
+        params(:,1) >= bounds(1,1) & params(:,1) <= bounds(1,2) & ...
+        params(:,2) >= bounds(2,1) & params(:,2) <= bounds(2,2) & ...
+        params(:,3) >= bounds(3,1) & params(:,3) <= bounds(3,2) & ...
+        params(:,4) >= bounds(4,1) & params(:,4) <= bounds(4,2));
+
+    params_trim = params(valid_i, :);
+
+    fprintf('Total profiles: %d\n', size(params,1));
+    fprintf('Profiles after trimming: %d\n', numel(valid_i));
+    fprintf('Profiles removed: %d\n', size(params,1) - numel(valid_i));
+
+    v_params = [];
+    v_params.alphao = params_trim(:, 1);
+    v_params.alphas = params_trim(:, 2);
+    v_params.tauo = params_trim(:, 3);
+    v_params.taus = params_trim(:, 4);
+
+    v1_params = [];
+    v1_params.alphao = params(:, 1);
+    v1_params.alphas = params(:, 2);
+    v1_params.tauo = params(:, 3);
+    v1_params.taus = params(:, 4);
+
+    % calculate mean and median of thermal lag parameters
+
+    % ALSO FIX INTO LOOP ABOVE
+
+    thermal_lag_medians = [];
+    thermal_lag_medians(1, 1) = median(v1_params.alphao);
+    thermal_lag_medians(2, 1) = median(v1_params.alphas);
+    thermal_lag_medians(3, 1) = median(v1_params.tauo);
+    thermal_lag_medians(4, 1) = median(v1_params.taus);
+
+    thermal_lag_means = [];
+    thermal_lag_means(1, 1) = mean(v_params.alphao);
+    thermal_lag_means(2, 1) = mean(v_params.alphas);
+    thermal_lag_means(3, 1) = mean(v_params.tauo);
+    thermal_lag_means(4, 1) = mean(v_params.taus);
+
+    % Apply thermal lag correction
+
+    % NaN out stalled profiles (where profile_index mod 2 != 0)
+
+    % FIX INTO LOOP ABOVE
+
+    valid = ~isnan(profile_index) & ~isnan(ptime1_dbd);
+    profile_index_int = interp1(ptime1_dbd(valid), profile_index(valid), ctd_time, 'nearest', NaN);
+
+    istall = abs(mod(profile_index_int, 1) - 0.5) <eps;
+
+    temp(istall) = NaN;
+
+    [temp_inside, cond_outside] = correctThermalLag(ctd_time,cond,temp,gliderVelocity,thermal_lag_medians);
+
+    tempCorrected = temp_inside;
+
+    salinCorrected = sw_salt(10*cond/sw_c3515, tempCorrected, pres);
+
+    % repopulate salinCorrected with raw salin values at ip index
+    salinCorrected(istall) = salin(istall); 
+
+    % add density
+    densCorrected = sw_pden(salinCorrected, tempCorrected, pres, 0);
+
+else
+    % ---------- Non-G1 path: skip thermal lag entirely ----------
+    thermal_lag_medians = [];          % for config
+    istall = false(size(temp));        % define for saving
+    tempCorrected  = temp;             % pass-through
+    salinCorrected = salin;
+    densCorrected  = dens;
 end
-
-%% Store Parameters
-
-% FIX INTO LOOP ABOVE 
-
-% trim outliers
-bounds = zeros(4,2);
-for i = 1:4
-    bounds(i,1) = prctile(params(:,i), 1);
-    bounds(i,2) = prctile(params(:,i), 99);
-
-end
-
-valid_i = find(...
-    params(:,1) >= bounds(1,1) & params(:,1) <= bounds(1,2) & ...
-    params(:,2) >= bounds(2,1) & params(:,2) <= bounds(2,2) & ...
-    params(:,3) >= bounds(3,1) & params(:,3) <= bounds(3,2) & ...
-    params(:,4) >= bounds(4,1) & params(:,4) <= bounds(4,2));
-
-params_trim = params(valid_i, :);
-
-fprintf('Total profiles: %d\n', size(params,1));
-fprintf('Profiles after trimming: %d\n', numel(valid_i));
-fprintf('Profiles removed: %d\n', size(params,1) - numel(valid_i));
-
-v_params = [];
-v_params.alphao = params_trim(:, 1);
-v_params.alphas = params_trim(:, 2);
-v_params.tauo = params_trim(:, 3);
-v_params.taus = params_trim(:, 4);
-
-v1_params = [];
-v1_params.alphao = params(:, 1);
-v1_params.alphas = params(:, 2);
-v1_params.tauo = params(:, 3);
-v1_params.taus = params(:, 4);
-
-%% calculate mean and median of thermal lag parameters
-
-% ALSO FIX INTO LOOP ABOVE
-
-thermal_lag_medians = [];
-thermal_lag_medians(1, 1) = median(v1_params.alphao);
-thermal_lag_medians(2, 1) = median(v1_params.alphas);
-thermal_lag_medians(3, 1) = median(v1_params.tauo);
-thermal_lag_medians(4, 1) = median(v1_params.taus);
-
-thermal_lag_means = [];
-thermal_lag_means(1, 1) = mean(v_params.alphao);
-thermal_lag_means(2, 1) = mean(v_params.alphas);
-thermal_lag_means(3, 1) = mean(v_params.tauo);
-thermal_lag_means(4, 1) = mean(v_params.taus);
-
-%% Apply thermal lag correction
-
-% NaN out stalled profiles (where profile_index mod 2 != 0)
-
-% FIX INTO LOOP ABOVE
-
-valid = ~isnan(profile_index) & ~isnan(ptime1_dbd);
-profile_index_int = interp1(ptime1_dbd(valid), profile_index(valid), ctd_time, 'nearest', NaN);
-
-istall = abs(mod(profile_index_int, 1) - 0.5) <eps;
-
-temp(istall) = NaN;
-
-[temp_inside, cond_outside] = correctThermalLag(ctd_time,cond,temp,gliderVelocity,thermal_lag_medians);
-
-tempCorrected = temp_inside;
-
-salinCorrected = sw_salt(10*cond/sw_c3515, tempCorrected, pres);
-
-% repopulate salinCorrected with raw salin values at ip index
-salinCorrected(istall) = salin(istall); 
-
-% add density
-densCorrected = sw_pden(salinCorrected, tempCorrected, pres, 0);
 
 % plot
 figure;
@@ -443,25 +453,28 @@ clim([ctd_time(1) ctd_time(end)]);
 xlabel('salinity (psu)')
 ylabel('temp (c)');
 title('original');
-figure;
-ts2 = ccplot(salinCorrected, tempCorrected, ctd_time, [ctd_time(1) ctd_time(end)], '.',10);
-colorbar;
-clim([ctd_time(1) ctd_time(end)]);
-xlabel('salinity (psu)')
-ylabel('temp (c)');
-title('corrected');
 
-figure;
-tss1 = plot(salin, temp, '.', 'DisplayName','original');
-hold on
-tss2 = plot(salinCorrected, tempCorrected, '.', 'DisplayName','corrected');
-hold off
-xlabel('salinity (psu)')
-ylabel('temp (c)');
-title('original vs corrected (no time factor)');
-legend;
+if isG1
+    figure;
+    ts2 = ccplot(salinCorrected, tempCorrected, ctd_time, [ctd_time(1) ctd_time(end)], '.',10);
+    colorbar;
+    clim([ctd_time(1) ctd_time(end)]);
+    xlabel('salinity (psu)')
+    ylabel('temp (c)');
+    title('corrected');
 
-%% Save
+    figure;
+    tss1 = plot(salin, temp, '.', 'DisplayName','original');
+    hold on
+    tss2 = plot(salinCorrected, tempCorrected, '.', 'DisplayName','corrected');
+    hold off
+    xlabel('salinity (psu)')
+    ylabel('temp (c)');
+    title('original vs corrected (no time factor)');
+    legend;
+end
+
+% Save
 ofn = fullfile(outdir, sprintf('%s_%s_CTD_L1.mat', gliderName, dateTag));
 
  % 'ptime', 'seconds since 0000-01-01T00:00',...
@@ -472,6 +485,8 @@ units = struct('altitude', 'm',...
                'angleOfAttack', 'decimal degrees',...
                'avgDepthRate', 'm/s',...
                'depth', 'm',...
+               'gpsLat', 'decimal degrees', ...
+               'gpsLon', 'decimal degrees', ...
                'horizontalVelocity', 'm/s',...
                'pitch', 'decimal degrees',...
                'ptime_datenum', 'days since 1970-01-01T00:00', ...
@@ -486,9 +501,11 @@ variable_description = struct('altitude', 'altimeter measured distance from bott
                               'angleOfAttack', 'difference between pitch and glider angle',...
                               'avgDepthRate', 'average rate of change of depth, >0 is down',...
                               'depth', 'depth calculated as function of pressure and position latitude',...
+                              'gpsLat', 'latitude', ...
+                              'gpsLon', 'longitude', ...
                               'horizontalVelocity', 'vehicle horizontal speed through water',...
                               'pitch', 'vehicle angle of inclination, >0 is nose up',...
-                              'ptime_datenum', 'Serial Date Number string', ...
+                              'ptime_datenum', 'serial sate number string', ...
                               'temp', 'temperature measured from CTD', ...
                               'tempCorrected', 'temperature from thermal lag correction (Garau)', ...
                               'salin', 'salinity measured from calculation of temp and cond', ...
@@ -516,6 +533,8 @@ save(ofn,...
      'angleOfAttack',...
      'avgDepthRate',...
      'depth',...
+     'gpsLat', ...
+     'gpsLon', ...
      'horizontalVelocity',...
      'pitch',...
      'ptime_datenum', ...
@@ -525,4 +544,3 @@ save(ofn,...
      'salinCorrected', ...
      'dens', ...
      'densCorrected');
-
